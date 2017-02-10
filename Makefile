@@ -11,7 +11,7 @@ maxclique: $(SRC)/main.cpp $(COMPONENT_OUTPUT_DIR)/libhpx_incumbent_component.so
 
 $(BUILD)/%.o: $(SRC)/%.cpp $(SRC)/%.hpp
 	mkdir -p $(BUILD)
-	$(CXX) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(COMPONENT_OUTPUT_DIR)/libhpx_incumbent_component.so: $(COMPONENT_DIR)/incumbent_component.cpp $(COMPONENT_DIR)/incumbent_component.hpp
 	mkdir -p $(COMPONENT_OUTPUT_DIR)

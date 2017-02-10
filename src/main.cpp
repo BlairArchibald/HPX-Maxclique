@@ -4,6 +4,13 @@
 #include <vector>
 #include <map>
 
+#include <hpx/hpx.hpp>
+#include <hpx/hpx_init.hpp>
+#include <hpx/include/lcos.hpp>
+#include <hpx/include/iostreams.hpp>
+
+#include "incumbent_component.hpp"
+
 #include "DimacsParser.hpp"
 #include "BitGraph.hpp"
 #include "BitSet.hpp"
@@ -83,13 +90,14 @@ namespace graph {
 
   template <unsigned n_words_>
   auto expand(const BitGraph<n_words_> & graph,
+              const hpx::naming::id_type & incumbent,
               std::vector<unsigned> & c,
               BitSet<n_words_> & p) -> void {
 
     // initial colouring
     std::array<unsigned, n_words_ * bits_per_word> p_order;
     std::array<unsigned, n_words_ * bits_per_word> p_bounds;
-    colour_class_order(p, p_order, p_bounds);
+    colour_class_order(graph, p, p_order, p_bounds);
 
     // for each v in p... (v comes later)
     for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
@@ -112,14 +120,14 @@ namespace graph {
         if (c.size() > bnd) {
           std::set<int> members;
           for (auto & v : c) {
-            members.insert(order[v]);
+            members.insert(v);
           }
           // Fire and forget updates
           hpx::apply<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members);
         }
       }
       else
-        expand(c, new_p);
+        expand(graph, incumbent, c, new_p);
 
       // now consider not taking v
       c.pop_back();
@@ -128,13 +136,23 @@ namespace graph {
   }
 
   template<unsigned n_words_>
-  auto runMaxclique(const & BitGraph<n_words_> graph) {
+  auto runMaxClique(const BitGraph<n_words_> & graph, hpx::naming::id_type incumbent) -> void {
+    std::vector<unsigned> c;
+    c.reserve(graph.size());
+
+    BitSet<n_words_> p;
+    p.resize(graph.size());
+    p.set_all();
+
+    // Updates happen to incumbent as a side effect
+    expand(graph, incumbent, c, p);
   }
 }
 
-int main(int argc, char* argv[]) {
+int hpx_main(int argc, char* argv[]) {
   if (2 != argc) {
     std::cout << "Usage: " << argv[0] << " file" << std::endl;
+    hpx::finalize();
     return EXIT_FAILURE;
   }
 
@@ -145,8 +163,29 @@ int main(int argc, char* argv[]) {
   auto graph = graph::orderGraphFromFile<NWORDS>(gFile, invMap);
 
   // Run Maxclique
+  auto incumbent = hpx::new_<globalBound::incumbent>(hpx::find_here()).get();
 
+  auto start_time = std::chrono::steady_clock::now();
+  graph::runMaxClique(graph, incumbent);
+  auto overall_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start_time);
   // Output result
+  hpx::cout << "Size: " << hpx::async<globalBound::incumbent::getBound_action>(incumbent).get() << hpx::endl;
+
+  auto members = hpx::async<globalBound::incumbent::getMembers_action>(incumbent).get();
+  hpx::cout << "Members: " << hpx::endl;
+  for (auto const& m : members) {
+    hpx::cout << invMap[m] << "," << hpx::endl;
+  }
+  hpx::cout << hpx::flush;
+
+  hpx::cout << "cpu = " << overall_time.count() << std::endl;
+
+  hpx::finalize();
+}
+
+int main (int argc, char* argv[]) {
+  return hpx::init(argc, argv);
 }
 
 
