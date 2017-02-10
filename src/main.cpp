@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <vector>
 #include <map>
+#include <chrono>
 
 #include <hpx/hpx.hpp>
 #include <hpx/hpx_init.hpp>
@@ -21,6 +22,9 @@
 #define NWORDS 8
 
 namespace graph {
+
+  static unsigned long long colourings = 0;
+
   // Order a graphFromFile and return an ordered graph alongside a map to invert
   // the vertex numbering at the end.
   template<unsigned n_words_>
@@ -94,6 +98,7 @@ namespace graph {
               std::vector<unsigned> & c,
               BitSet<n_words_> & p) -> void {
 
+    ++colourings;
     // initial colouring
     std::array<unsigned, n_words_ * bits_per_word> p_order;
     std::array<unsigned, n_words_ * bits_per_word> p_bounds;
@@ -147,7 +152,9 @@ namespace graph {
     // Updates happen to incumbent as a side effect
     expand(graph, incumbent, c, p);
   }
+
 }
+
 
 int hpx_main(int argc, char* argv[]) {
   if (2 != argc) {
@@ -166,20 +173,24 @@ int hpx_main(int argc, char* argv[]) {
   auto incumbent = hpx::new_<globalBound::incumbent>(hpx::find_here()).get();
 
   auto start_time = std::chrono::steady_clock::now();
+
   graph::runMaxClique(graph, incumbent);
+
   auto overall_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_time);
+
   // Output result
   hpx::cout << "Size: " << hpx::async<globalBound::incumbent::getBound_action>(incumbent).get() << hpx::endl;
 
   auto members = hpx::async<globalBound::incumbent::getMembers_action>(incumbent).get();
   hpx::cout << "Members: " << hpx::endl;
   for (auto const& m : members) {
-    hpx::cout << invMap[m] << "," << hpx::endl;
+    hpx::cout << invMap[m] + 1 << " ";
   }
-  hpx::cout << hpx::flush;
+  hpx::cout << hpx::endl << hpx::flush;
 
   hpx::cout << "cpu = " << overall_time.count() << std::endl;
+  hpx::cout << "colourings = " << graph::colourings << std::endl;
 
   hpx::finalize();
 }
