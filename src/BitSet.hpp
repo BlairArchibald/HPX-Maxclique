@@ -74,6 +74,12 @@ public:
     }
     return -1;
   }
+
+  template<class Archive>
+  void serialize(Archive & ar, const unsigned version) {
+    ar & _size;
+    ar & _bits;
+  }
 };
 
 #endif

@@ -47,6 +47,12 @@ public:
   auto intersect_with_row_complement(int row, BitSet<n_words_> & p) const -> void {
     p.intersect_with_complement(_adjacency[row]);
   }
+
+  template<class Archive>
+  void serialize(Archive & ar, const unsigned int version) {
+    ar & _size;
+    ar & _adjacency;
+  }
 };
 
 #endif
