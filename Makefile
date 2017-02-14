@@ -1,4 +1,4 @@
-CXXFLAGS = -std=c++17 -O3 -march=native
+CXXFLAGS = -std=c++17 -O3 -march=native -g
 CXX = g++
 
 SRC = src/

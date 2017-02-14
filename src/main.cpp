@@ -4,13 +4,17 @@
 #include <vector>
 #include <map>
 #include <chrono>
+#include <memory>
+#include <typeinfo>
 
 #include <hpx/hpx.hpp>
 #include <hpx/hpx_init.hpp>
 #include <hpx/include/lcos.hpp>
 #include <hpx/include/iostreams.hpp>
+#include <hpx/include/serialization.hpp>
 
 #include "incumbent_component.hpp"
+#include "workqueue_component.hpp"
 
 #include "DimacsParser.hpp"
 #include "BitGraph.hpp"
@@ -20,6 +24,16 @@
 // 8 words covers 400 vertices
 // Later we can specialise this at compile time
 #define NWORDS 8
+
+// Forward action decls
+namespace graph {
+  template<unsigned n_words_>
+  auto maxcliqueTask(const BitGraph<n_words_> graph, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) -> void;
+}
+HPX_PLAIN_ACTION(graph::maxcliqueTask<NWORDS>, maxcliqueTask400Action)
+
+// For distributed promises
+HPX_REGISTER_ACTION(hpx::lcos::base_lco_with_value<int>::set_value_action, set_value_action_int);
 
 namespace graph {
 
@@ -106,8 +120,6 @@ namespace graph {
 
     // for each v in p... (v comes later)
     for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
-      // bound, timeout or early exit?
-
       auto bnd = hpx::async<globalBound::incumbent::getBound_action>(incumbent).get();
       if (c.size() + p_bounds[n] <= bnd)
         return;
@@ -131,8 +143,9 @@ namespace graph {
           hpx::apply<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members);
         }
       }
-      else
+      else {
         expand(graph, incumbent, c, new_p);
+      }
 
       // now consider not taking v
       c.pop_back();
@@ -141,16 +154,74 @@ namespace graph {
   }
 
   template<unsigned n_words_>
-  auto runMaxClique(const BitGraph<n_words_> & graph, hpx::naming::id_type incumbent) -> void {
-    std::vector<unsigned> c;
-    c.reserve(graph.size());
-
+  auto runMaxClique(const BitGraph<n_words_> & graph, hpx::naming::id_type incumbent, hpx::naming::id_type workqueue) -> void {
     BitSet<n_words_> p;
     p.resize(graph.size());
     p.set_all();
 
-    // Updates happen to incumbent as a side effect
+    // Spawn top level only (for now)
+    std::array<unsigned, n_words_ * bits_per_word> p_order;
+    std::array<unsigned, n_words_ * bits_per_word> p_bounds;
+    colour_class_order(graph, p, p_order, p_bounds);
+
+    std::vector<std::shared_ptr<hpx::promise<int>>> promises;
+    std::vector<hpx::future<int>> futures;
+
+    for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
+      std::vector<unsigned> c;
+      c.reserve(graph.size());
+      auto v = p_order[n];
+      c.push_back(v);
+
+      // filter p to contain vertices adjacent to v
+      BitSet<n_words_> new_p = p;
+      graph.intersect_with_row(v, new_p);
+
+      if (new_p.empty()) {
+        auto bnd = hpx::async<globalBound::incumbent::getBound_action>(incumbent).get();
+        if (c.size() > bnd) {
+          std::set<int> members;
+          for (auto & v : c) {
+            members.insert(v);
+          }
+          hpx::apply<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members);
+        }
+      } else {
+        // This spawning isn't quite right, need to avoid spawning duplicates.
+        // Spawn it as a new task
+        auto promise = std::shared_ptr<hpx::promise<int>>(new hpx::promise<int>());
+        auto f = promise->get_future();
+        auto promise_id = promise->get_id();
+
+        promises.push_back(std::move(promise));
+        futures.push_back(std::move(f));
+
+        hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueTask400Action(), _1, graph, incumbent, c, new_p, promise_id);
+        hpx::apply<workstealing::workqueue::addWork_action>(workqueue, task);
+
+        c.pop_back();
+        p.unset(v);
+      }
+    }
+    hpx::wait_all(futures);
+  }
+
+  template<unsigned n_words_>
+  void maxcliqueTask(const BitGraph<n_words_> graph, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) {
     expand(graph, incumbent, c, p);
+    hpx::apply<hpx::lcos::base_lco_with_value<int>::set_value_action>(promise, 1);
+    return;
+  }
+}
+void scheduler(hpx::naming::id_type workqueue) {
+  bool running = true;
+  while (running) {
+    auto task = hpx::async<workstealing::workqueue::steal_action>(workqueue).get();
+    if (task) {
+      task(hpx::find_here());
+    } else {
+      hpx::this_thread::suspend(200);
+    }
   }
 
 }
@@ -171,11 +242,13 @@ int hpx_main(int argc, char* argv[]) {
 
   // Run Maxclique
   auto incumbent = hpx::new_<globalBound::incumbent>(hpx::find_here()).get();
+  auto workqueue = hpx::new_<workstealing::workqueue>(hpx::find_here()).get();
+
+  // Start a scheduler threads
+  hpx::apply(scheduler, workqueue);
 
   auto start_time = std::chrono::steady_clock::now();
-
-  graph::runMaxClique(graph, incumbent);
-
+  graph::runMaxClique(graph, incumbent, workqueue);
   auto overall_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_time);
 
@@ -192,7 +265,10 @@ int hpx_main(int argc, char* argv[]) {
   hpx::cout << "cpu = " << overall_time.count() << std::endl;
   hpx::cout << "colourings = " << graph::colourings << std::endl;
 
-  hpx::finalize();
+  // TODO: A nicer termination
+  //hpx::finalize();
+  hpx::this_thread::suspend(2000);
+  hpx::terminate();
 }
 
 int main (int argc, char* argv[]) {
