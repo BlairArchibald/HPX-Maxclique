@@ -29,16 +29,30 @@
 namespace graph {
   template<unsigned n_words_>
   auto maxcliqueTask(const BitGraph<n_words_> graph, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) -> void;
+
+  std::atomic<int> globalBound(0);
+
+  // Atomically update the global bound
+  auto updateBound(int newBound) -> void {
+    while(true) {
+      auto curBnd = globalBound.load();
+      if (newBound < curBnd) {
+        break;
+      }
+
+      if (globalBound.compare_exchange_weak(curBnd, newBound)) {
+        break;
+      }
+    }
+  }
 }
 HPX_PLAIN_ACTION(graph::maxcliqueTask<NWORDS>, maxcliqueTask400Action)
+HPX_PLAIN_ACTION(graph::updateBound, updateBoundAction)
 
 // For distributed promises
 HPX_REGISTER_ACTION(hpx::lcos::base_lco_with_value<int>::set_value_action, set_value_action_int);
 
 namespace graph {
-
-  static unsigned long long colourings = 0;
-
   // Order a graphFromFile and return an ordered graph alongside a map to invert
   // the vertex numbering at the end.
   template<unsigned n_words_>
@@ -111,8 +125,6 @@ namespace graph {
               const hpx::naming::id_type & incumbent,
               std::vector<unsigned> & c,
               BitSet<n_words_> & p) -> void {
-
-    ++colourings;
     // initial colouring
     std::array<unsigned, n_words_ * bits_per_word> p_order;
     std::array<unsigned, n_words_ * bits_per_word> p_bounds;
@@ -120,7 +132,7 @@ namespace graph {
 
     // for each v in p... (v comes later)
     for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
-      auto bnd = hpx::async<globalBound::incumbent::getBound_action>(incumbent).get();
+      auto bnd = globalBound.load();
       if (c.size() + p_bounds[n] <= bnd)
         return;
 
@@ -139,8 +151,10 @@ namespace graph {
           for (auto & v : c) {
             members.insert(v);
           }
+
           // Fire and forget updates
           hpx::apply<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members);
+          hpx::async<updateBoundAction>(hpx::find_here(), c.size()).get();
         }
       }
       else {
@@ -272,7 +286,6 @@ int hpx_main(int argc, char* argv[]) {
   hpx::cout << hpx::endl << hpx::flush;
 
   hpx::cout << "cpu = " << overall_time.count() << std::endl;
-  hpx::cout << "colourings = " << graph::colourings << std::endl;
 
   // TODO: A nicer termination
   //hpx::finalize();
