@@ -31,20 +31,8 @@ namespace graph {
   auto maxcliqueTask(const BitGraph<n_words_> graph, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) -> void;
 
   std::atomic<int> globalBound(0);
+  auto updateBound(int newBound) -> void;
 
-  // Atomically update the global bound
-  auto updateBound(int newBound) -> void {
-    while(true) {
-      auto curBnd = globalBound.load();
-      if (newBound < curBnd) {
-        break;
-      }
-
-      if (globalBound.compare_exchange_weak(curBnd, newBound)) {
-        break;
-      }
-    }
-  }
 }
 HPX_PLAIN_ACTION(graph::maxcliqueTask<NWORDS>, maxcliqueTask400Action)
 HPX_PLAIN_ACTION(graph::updateBound, updateBoundAction)
@@ -225,6 +213,27 @@ namespace graph {
     expand(graph, incumbent, c, p);
     hpx::apply<hpx::lcos::base_lco_with_value<int>::set_value_action>(promise, 1);
     return;
+  }
+
+  // Atomically update the global bound on all localities
+  auto updateBound(int newBound) -> void {
+    while(true) {
+      auto curBnd = globalBound.load();
+      if (newBound < curBnd) {
+        break;
+      }
+
+      if (globalBound.compare_exchange_weak(curBnd, newBound)) {
+        break;
+      }
+    }
+
+    // Broadcast it by pushing work items to all other nodes
+    auto localities = hpx::find_all_localities();
+    for (auto const & node : localities) {
+      hpx::apply<updateBoundAction>(node, newBound);
+    }
+
   }
 }
 
