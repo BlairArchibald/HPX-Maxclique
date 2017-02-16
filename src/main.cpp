@@ -213,19 +213,28 @@ namespace graph {
     return;
   }
 }
+
 void scheduler(hpx::naming::id_type workqueue) {
+  auto threads = hpx::get_os_thread_count() == 1 ? 1 : hpx::get_os_thread_count() - 1;
+  hpx::threads::executors::local_queue_executor scheduler(threads);
+
+  // Debugging
+  std::cout << "Running with: " << threads << " scheduler threads" << std::endl;
+
   bool running = true;
   while (running) {
-    auto task = hpx::async<workstealing::workqueue::steal_action>(workqueue).get();
-    if (task) {
-      task(hpx::find_here());
+    auto pending = scheduler.num_pending_closures();
+    if (pending < threads) {
+      auto task = hpx::async<workstealing::workqueue::steal_action>(workqueue).get();
+      if (task) {
+        auto t = hpx::util::bind(task, hpx::find_here());
+        scheduler.add(t);
+      }
     } else {
-      hpx::this_thread::suspend(200);
+      hpx::this_thread::suspend();
     }
   }
-
 }
-
 
 int hpx_main(int argc, char* argv[]) {
   if (2 != argc) {
