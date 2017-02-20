@@ -259,14 +259,14 @@ void scheduler(hpx::naming::id_type workqueue) {
 }
 HPX_PLAIN_ACTION(scheduler, schedulerAction)
 
-int hpx_main(int argc, char* argv[]) {
-  if (2 != argc) {
-    std::cout << "Usage: " << argv[0] << " file" << std::endl;
+int hpx_main(boost::program_options::variables_map & opts) {
+  auto inputFile = opts["input-file"].as<std::string>();
+  if (inputFile.empty()) {
     hpx::finalize();
     return EXIT_FAILURE;
   }
 
-  auto gFile = dimacs::read_dimacs(std::string(argv[1]));
+  auto gFile = dimacs::read_dimacs(inputFile);
 
   // Order the graph (keep a hold of the map)
   std::map<int, int> invMap;
@@ -307,7 +307,20 @@ int hpx_main(int argc, char* argv[]) {
 }
 
 int main (int argc, char* argv[]) {
-  return hpx::init(argc, argv);
+  boost::program_options::options_description
+    desc_commandline("Usage: " HPX_APPLICATION_STRING " [options]");
+
+  desc_commandline.add_options()
+    ( "spawn-depth,d",
+      boost::program_options::value<std::uint64_t>()->default_value(1),
+      "Depth in the tree to spawn at"
+    )
+    ( "input-file,f",
+      boost::program_options::value<std::string>(),
+      "DIMACS formatted input graph"
+    );
+
+  return hpx::init(desc_commandline, argc, argv);
 }
 
 
