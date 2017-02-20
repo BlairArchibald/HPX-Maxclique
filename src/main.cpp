@@ -260,6 +260,7 @@ void scheduler(hpx::naming::id_type workqueue) {
     }
   }
 }
+HPX_PLAIN_ACTION(scheduler, schedulerAction)
 
 int hpx_main(int argc, char* argv[]) {
   if (2 != argc) {
@@ -278,8 +279,12 @@ int hpx_main(int argc, char* argv[]) {
   auto incumbent = hpx::new_<globalBound::incumbent>(hpx::find_here()).get();
   auto workqueue = hpx::new_<workstealing::workqueue>(hpx::find_here()).get();
 
-  // Start a scheduler threads
-  hpx::apply(scheduler, workqueue);
+  // Start a scheduler on each node
+  auto localities = hpx::find_all_localities();
+  for (auto const & node : localities) {
+    // Can't use async here since the scheduler never returns
+    hpx::apply<schedulerAction>(node, workqueue);
+  }
 
   auto start_time = std::chrono::steady_clock::now();
   graph::runMaxClique(graph, incumbent, workqueue);
