@@ -142,9 +142,9 @@ namespace graph {
           }
           hpx::async<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members).get();
           hpx::async<broadcastBoundAction>(hpx::find_here(), c.size()).get();
-      } else {
-        expand(graph, incumbent, c, new_p);
       }
+
+      expand(graph, incumbent, c, new_p);
 
       // now consider not taking v
       c.pop_back();
