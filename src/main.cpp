@@ -32,10 +32,12 @@ namespace graph {
 
   std::atomic<int> globalBound(0);
   auto updateBound(int newBound) -> void;
+  auto broadcastBound(int newBound) -> void;
 
 }
 HPX_PLAIN_ACTION(graph::maxcliqueTask<NWORDS>, maxcliqueTask400Action)
 HPX_PLAIN_ACTION(graph::updateBound, updateBoundAction)
+HPX_PLAIN_ACTION(graph::broadcastBound, broadcastBoundAction)
 
 // For distributed promises
 HPX_REGISTER_ACTION(hpx::lcos::base_lco_with_value<int>::set_value_action, set_value_action_int);
@@ -142,7 +144,7 @@ namespace graph {
 
           // Fire and forget updates
           hpx::apply<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members);
-          hpx::async<updateBoundAction>(hpx::find_here(), c.size()).get();
+          hpx::async<broadcastBoundAction>(hpx::find_here(), c.size()).get();
         }
       }
       else {
@@ -216,6 +218,13 @@ namespace graph {
   }
 
   // Atomically update the global bound on all localities
+  auto broadcastBound(int newBound) -> void {
+    auto localities = hpx::find_all_localities();
+    for (auto const & node : localities) {
+      hpx::apply<updateBoundAction>(node, newBound);
+    }
+  }
+
   auto updateBound(int newBound) -> void {
     while(true) {
       auto curBnd = globalBound.load();
@@ -227,13 +236,6 @@ namespace graph {
         break;
       }
     }
-
-    // Broadcast it by pushing work items to all other nodes
-    auto localities = hpx::find_all_localities();
-    for (auto const & node : localities) {
-      hpx::apply<updateBoundAction>(node, newBound);
-    }
-
   }
 }
 
