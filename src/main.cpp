@@ -140,9 +140,7 @@ namespace graph {
           for (auto & v : c) {
             members.insert(v);
           }
-
-          // Fire and forget updates
-          hpx::apply<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members);
+          hpx::async<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members).get();
           hpx::async<broadcastBoundAction>(hpx::find_here(), c.size()).get();
       } else {
         expand(graph, incumbent, c, new_p);
