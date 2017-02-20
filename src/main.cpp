@@ -135,8 +135,7 @@ namespace graph {
       BitSet<n_words_> new_p = p;
       graph.intersect_with_row(v, new_p);
 
-      if (new_p.empty()) {
-        if (c.size() > bnd) {
+      if (c.size() > bnd) {
           std::set<int> members;
           for (auto & v : c) {
             members.insert(v);
@@ -145,9 +144,7 @@ namespace graph {
           // Fire and forget updates
           hpx::apply<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members);
           hpx::async<broadcastBoundAction>(hpx::find_here(), c.size()).get();
-        }
-      }
-      else {
+      } else {
         expand(graph, incumbent, c, new_p);
       }
 
