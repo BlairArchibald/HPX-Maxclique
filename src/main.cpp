@@ -311,11 +311,17 @@ int hpx_main(boost::program_options::variables_map & opts) {
   hpx::cout << "Size: " << hpx::async<globalBound::incumbent::getBound_action>(incumbent).get() << hpx::endl;
 
   auto members = hpx::async<globalBound::incumbent::getMembers_action>(incumbent).get();
-  hpx::cout << "Members: " << hpx::endl;
+  std::vector<unsigned> clique;
   for (auto const& m : members) {
-    hpx::cout << invMap[m] + 1 << " ";
+    clique.push_back(invMap[m] + 1);
   }
-  hpx::cout << hpx::endl << hpx::flush;
+  std::sort(clique.begin(), clique.end());
+
+  hpx::cout << "Members: " << hpx::endl;
+  for (auto const & c : clique) {
+    hpx::cout << c << " ";
+  }
+  hpx::cout << hpx::endl;
 
   hpx::cout << "cpu = " << overall_time.count() << std::endl;
 
