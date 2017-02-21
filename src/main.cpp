@@ -231,46 +231,51 @@ namespace graph {
   }
 }
 
-std::atomic<bool> running(true);
-auto cancelScheduler() -> void {
-  auto cur = running.load();
-  while (!running.compare_exchange_weak(cur, false)) {
-    ;
-  }
+namespace scheduler {
+  std::atomic<bool> running(true);
+  auto cancelScheduler() -> void;
+  auto scheduler(hpx::naming::id_type workqueue) -> void;
 }
-HPX_PLAIN_ACTION(cancelScheduler, cancelSchedulerAction)
+HPX_PLAIN_ACTION(scheduler::cancelScheduler, cancelSchedulerAction)
+HPX_PLAIN_ACTION(scheduler::scheduler, schedulerAction)
 
-auto cancelSchedulers() -> void {
-  auto localities = hpx::find_all_localities();
-  for (auto const & node : localities) {
-    //hpx::apply<cancelSchedulerAction>(node);
-    hpx::async<cancelSchedulerAction>(node).get();
+namespace scheduler {
+  auto cancelScheduler() -> void {
+    auto cur = running.load();
+    while (!running.compare_exchange_weak(cur, false)) {
+      ;
+    }
   }
-}
+
+  auto cancelSchedulers() -> void {
+    auto localities = hpx::find_all_localities();
+    for (auto const & node : localities) {
+      hpx::async<cancelSchedulerAction>(node).get();
+    }
+  }
 
 
-void scheduler(hpx::naming::id_type workqueue) {
-  auto threads = hpx::get_os_thread_count() == 1 ? 1 : hpx::get_os_thread_count() - 1;
-  hpx::threads::executors::local_queue_executor scheduler(threads);
+  auto scheduler(hpx::naming::id_type workqueue) -> void {
+    auto threads = hpx::get_os_thread_count() == 1 ? 1 : hpx::get_os_thread_count() - 1;
+    hpx::threads::executors::local_queue_executor scheduler(threads);
 
-  // Debugging
-  std::cout << "Running with: " << threads << " scheduler threads" << std::endl;
+    // Debugging
+    std::cout << "Running with: " << threads << " scheduler threads" << std::endl;
 
-  //bool running = true;
-  while (running) {
-    auto pending = scheduler.num_pending_closures();
-    if (pending < threads) {
-      auto task = hpx::async<workstealing::workqueue::steal_action>(workqueue).get();
-      if (task) {
-        auto t = hpx::util::bind(task, hpx::find_here());
-        scheduler.add(t);
+    while (running) {
+      auto pending = scheduler.num_pending_closures();
+      if (pending < threads) {
+        auto task = hpx::async<workstealing::workqueue::steal_action>(workqueue).get();
+        if (task) {
+          auto t = hpx::util::bind(task, hpx::find_here());
+          scheduler.add(t);
+        }
+      } else {
+        hpx::this_thread::suspend();
       }
-    } else {
-      hpx::this_thread::suspend();
     }
   }
 }
-HPX_PLAIN_ACTION(scheduler, schedulerAction)
 
 int hpx_main(boost::program_options::variables_map & opts) {
   auto inputFile = opts["input-file"].as<std::string>();
@@ -314,7 +319,7 @@ int hpx_main(boost::program_options::variables_map & opts) {
 
   hpx::cout << "cpu = " << overall_time.count() << std::endl;
 
-  cancelSchedulers();
+  scheduler::cancelSchedulers();
 
   return hpx::finalize();
 }
