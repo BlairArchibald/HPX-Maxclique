@@ -21,7 +21,7 @@ namespace workstealing
     >
     {
     private:
-      using funcType = hpx::util::function<void(hpx::naming::id_type)>;
+      using funcType = hpx::util::function<void()>;
       std::queue<funcType> tasks;
 
     public:

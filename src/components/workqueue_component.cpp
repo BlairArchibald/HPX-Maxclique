@@ -1,9 +1,8 @@
 #include "workqueue_component.hpp"
-//include <hpx/include/lcos.hpp>
 
 namespace workstealing
 {
-  using funcType = hpx::util::function<void(hpx::naming::id_type)>;
+  using funcType = hpx::util::function<void()>;
   funcType workqueue::steal() {
       if (tasks.size() >= 1) {
         auto task = tasks.front();

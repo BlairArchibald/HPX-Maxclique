@@ -179,7 +179,7 @@ namespace graph {
 
         futures.push_back(std::move(f));
 
-        hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueTask400Action(), _1, graph, incumbent, c, new_p, promise_id);
+        hpx::util::function<void()> task = hpx::util::bind(maxcliqueTask400Action(), hpx::find_here(), graph, incumbent, c, new_p, promise_id);
         hpx::apply<workstealing::workqueue::addWork_action>(workqueue, task);
       } else {
         spawnTasks(graph, spawnDepth - 1, c, new_p, workqueue, incumbent, futures);
@@ -267,8 +267,7 @@ namespace scheduler {
       if (pending < threads) {
         auto task = hpx::async<workstealing::workqueue::steal_action>(workqueue).get();
         if (task) {
-          auto t = hpx::util::bind(task, hpx::find_here());
-          scheduler.add(t);
+          scheduler.add(task);
         }
       } else {
         hpx::this_thread::suspend();
