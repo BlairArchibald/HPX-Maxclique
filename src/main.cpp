@@ -231,6 +231,23 @@ namespace graph {
   }
 }
 
+std::atomic<bool> running(true);
+auto cancelScheduler() -> void {
+  auto cur = running.load();
+  while (!running.compare_exchange_weak(cur, false)) {
+    ;
+  }
+}
+HPX_PLAIN_ACTION(cancelScheduler, cancelSchedulerAction)
+
+auto cancelSchedulers() -> void {
+  auto localities = hpx::find_all_localities();
+  for (auto const & node : localities) {
+    //hpx::apply<cancelSchedulerAction>(node);
+    hpx::async<cancelSchedulerAction>(node).get();
+  }
+}
+
 
 void scheduler(hpx::naming::id_type workqueue) {
   auto threads = hpx::get_os_thread_count() == 1 ? 1 : hpx::get_os_thread_count() - 1;
@@ -239,7 +256,7 @@ void scheduler(hpx::naming::id_type workqueue) {
   // Debugging
   std::cout << "Running with: " << threads << " scheduler threads" << std::endl;
 
-  bool running = true;
+  //bool running = true;
   while (running) {
     auto pending = scheduler.num_pending_closures();
     if (pending < threads) {
@@ -297,10 +314,9 @@ int hpx_main(boost::program_options::variables_map & opts) {
 
   hpx::cout << "cpu = " << overall_time.count() << std::endl;
 
-  // TODO: A nicer termination
-  //hpx::finalize();
-  hpx::this_thread::suspend(2000);
-  hpx::terminate();
+  cancelSchedulers();
+
+  return hpx::finalize();
 }
 
 int main (int argc, char* argv[]) {
