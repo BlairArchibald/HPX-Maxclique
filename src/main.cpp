@@ -10,6 +10,7 @@
 #include <hpx/hpx.hpp>
 #include <hpx/hpx_init.hpp>
 #include <hpx/include/lcos.hpp>
+#include <hpx/lcos/broadcast.hpp>
 #include <hpx/include/iostreams.hpp>
 #include <hpx/include/serialization.hpp>
 
@@ -37,7 +38,6 @@ namespace graph {
 }
 HPX_PLAIN_ACTION(graph::maxcliqueTask<NWORDS>, maxcliqueTask400Action)
 HPX_PLAIN_ACTION(graph::updateBound, updateBoundAction)
-HPX_PLAIN_ACTION(graph::broadcastBound, broadcastBoundAction)
 
 // For distributed promises
 HPX_REGISTER_ACTION(hpx::lcos::base_lco_with_value<int>::set_value_action, set_value_action_int);
@@ -140,8 +140,8 @@ namespace graph {
           for (auto & v : c) {
             members.insert(v);
           }
+          hpx::lcos::broadcast_apply<updateBoundAction>(hpx::find_all_localities(), c.size());
           hpx::async<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members).get();
-          hpx::async<broadcastBoundAction>(hpx::find_here(), c.size()).get();
       }
 
       expand(graph, incumbent, c, new_p);
@@ -197,14 +197,6 @@ namespace graph {
     return;
   }
 
-  // Atomically update the global bound on all localities
-  auto broadcastBound(int newBound) -> void {
-    auto localities = hpx::find_all_localities();
-    for (auto const & node : localities) {
-      hpx::apply<updateBoundAction>(node, newBound);
-    }
-  }
-
   auto updateBound(int newBound) -> void {
     while(true) {
       auto curBnd = globalBound.load();
@@ -247,14 +239,6 @@ namespace scheduler {
     }
   }
 
-  auto cancelSchedulers() -> void {
-    auto localities = hpx::find_all_localities();
-    for (auto const & node : localities) {
-      hpx::async<cancelSchedulerAction>(node).get();
-    }
-  }
-
-
   auto scheduler(hpx::naming::id_type workqueue) -> void {
     auto threads = hpx::get_os_thread_count() == 1 ? 1 : hpx::get_os_thread_count() - 1;
     hpx::threads::executors::local_queue_executor scheduler(threads);
@@ -268,7 +252,9 @@ namespace scheduler {
         auto task = hpx::async<workstealing::workqueue::steal_action>(workqueue).get();
         if (task) {
           scheduler.add(task);
-        }
+        } //else {
+        //   hpx::this_thread::suspend();
+        // }
       } else {
         hpx::this_thread::suspend();
       }
@@ -294,11 +280,7 @@ int hpx_main(boost::program_options::variables_map & opts) {
   auto workqueue = hpx::new_<workstealing::workqueue>(hpx::find_here()).get();
 
   // Start a scheduler on each node
-  auto localities = hpx::find_all_localities();
-  for (auto const & node : localities) {
-    // Can't use async here since the scheduler never returns
-    hpx::apply<schedulerAction>(node, workqueue);
-  }
+  hpx::lcos::broadcast_apply<schedulerAction>(hpx::find_all_localities(), workqueue);
 
   auto spawnDepth = opts["spawn-depth"].as<std::uint64_t>();
   auto start_time = std::chrono::steady_clock::now();
@@ -312,7 +294,7 @@ int hpx_main(boost::program_options::variables_map & opts) {
   auto members = hpx::async<globalBound::incumbent::getMembers_action>(incumbent).get();
   std::vector<unsigned> clique;
   for (auto const& m : members) {
-    clique.push_back(invMap[m] + 1);
+    clique.push_back(invMap[m]);
   }
   std::sort(clique.begin(), clique.end());
 
@@ -324,7 +306,7 @@ int hpx_main(boost::program_options::variables_map & opts) {
 
   hpx::cout << "cpu = " << overall_time.count() << std::endl;
 
-  scheduler::cancelSchedulers();
+  hpx::lcos::broadcast_apply<cancelSchedulerAction>(hpx::find_all_localities());
 
   return hpx::finalize();
 }
