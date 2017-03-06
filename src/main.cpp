@@ -13,6 +13,7 @@
 #include <hpx/lcos/broadcast.hpp>
 #include <hpx/include/iostreams.hpp>
 #include <hpx/include/serialization.hpp>
+#include <hpx/include/thread_executors.hpp>
 
 #include "incumbent_component.hpp"
 #include "workqueue_component.hpp"
@@ -241,7 +242,7 @@ namespace scheduler {
 
   auto scheduler(hpx::naming::id_type workqueue) -> void {
     auto threads = hpx::get_os_thread_count() == 1 ? 1 : hpx::get_os_thread_count() - 1;
-    hpx::threads::executors::local_queue_executor scheduler(threads);
+    hpx::threads::executors::local_queue_os_executor scheduler(threads);
 
     // Debugging
     std::cout << "Running with: " << threads << " scheduler threads" << std::endl;
@@ -252,9 +253,9 @@ namespace scheduler {
         auto task = hpx::async<workstealing::workqueue::steal_action>(workqueue).get();
         if (task) {
           scheduler.add(task);
-        } //else {
-        //   hpx::this_thread::suspend();
-        // }
+        } else {
+          hpx::this_thread::suspend();
+         }
       } else {
         hpx::this_thread::suspend();
       }
