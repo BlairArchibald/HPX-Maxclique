@@ -242,7 +242,7 @@ namespace scheduler {
 
   auto scheduler(hpx::naming::id_type workqueue) -> void {
     auto threads = hpx::get_os_thread_count() == 1 ? 1 : hpx::get_os_thread_count() - 1;
-    hpx::threads::executors::local_queue_os_executor scheduler(threads);
+    hpx::threads::executors::current_executor scheduler;
 
     // Debugging
     std::cout << "Running with: " << threads << " scheduler threads" << std::endl;
