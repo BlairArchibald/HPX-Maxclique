@@ -2,19 +2,19 @@
 
 namespace workstealing
 {
-  using funcType = hpx::util::function<void()>;
+  using funcType = hpx::util::function<void(hpx::naming::id_type)>;
   funcType workqueue::steal() {
-      if (tasks.size() >= 1) {
-        auto task = tasks.front();
-        tasks.pop();
-        return task;
-      }
-      return nullptr;
+    if (tasks.size() >= 1) {
+      auto task = tasks.front();
+      tasks.pop();
+      return task;
     }
+    return nullptr;
+  }
 
-    void workqueue::addWork(funcType task) {
-      tasks.push(task);
-    }
+  void workqueue::addWork(funcType task) {
+    tasks.push(task);
+  }
 }
 HPX_REGISTER_COMPONENT_MODULE();
 

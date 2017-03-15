@@ -40,6 +40,16 @@ namespace graph {
 HPX_PLAIN_ACTION(graph::maxcliqueTask<NWORDS>, maxcliqueTask400Action)
 HPX_PLAIN_ACTION(graph::updateBound, updateBoundAction)
 
+namespace scheduler {
+  std::atomic<bool> running(true);
+  hpx::lcos::local::counting_semaphore tasks_required_sem;
+  hpx::naming::id_type local_workqueue;
+  auto cancelScheduler() -> void;
+  auto scheduler(std::vector<hpx::naming::id_type> workqueues) -> void;
+}
+HPX_PLAIN_ACTION(scheduler::cancelScheduler, cancelSchedulerAction)
+HPX_PLAIN_ACTION(scheduler::scheduler, schedulerAction)
+
 // For distributed promises
 HPX_REGISTER_ACTION(hpx::lcos::base_lco_with_value<int>::set_value_action, set_value_action_int);
 
@@ -158,7 +168,6 @@ namespace graph {
                   std::uint64_t spawnDepth,
                   std::vector<unsigned> c,
                   BitSet<n_words_> p,
-                  hpx::naming::id_type workqueue,
                   hpx::naming::id_type incumbent,
                   std::vector<hpx::future<int>> & futures) -> void {
     std::array<unsigned, n_words_ * bits_per_word> p_order;
@@ -180,10 +189,10 @@ namespace graph {
 
         futures.push_back(std::move(f));
 
-        hpx::util::function<void()> task = hpx::util::bind(maxcliqueTask400Action(), hpx::find_here(), graph, incumbent, c, new_p, promise_id);
-        hpx::apply<workstealing::workqueue::addWork_action>(workqueue, task);
+        hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueTask400Action(), _1, graph, incumbent, c, new_p, promise_id);
+        hpx::apply<workstealing::workqueue::addWork_action>(scheduler::local_workqueue, task);
       } else {
-        spawnTasks(graph, spawnDepth - 1, c, new_p, workqueue, incumbent, futures);
+        spawnTasks(graph, spawnDepth - 1, c, new_p, incumbent, futures);
       }
 
       c.pop_back();
@@ -195,6 +204,7 @@ namespace graph {
   void maxcliqueTask(const BitGraph<n_words_> graph, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) {
     expand(graph, incumbent, c, p);
     hpx::apply<hpx::lcos::base_lco_with_value<int>::set_value_action>(promise, 1);
+    scheduler::tasks_required_sem.signal();
     return;
   }
 
@@ -212,25 +222,17 @@ namespace graph {
   }
 
   template<unsigned n_words_>
-  auto runMaxClique(const BitGraph<n_words_> & graph, std::uint64_t spawnDepth, hpx::naming::id_type incumbent, hpx::naming::id_type workqueue) -> void {
+  auto runMaxClique(const BitGraph<n_words_> & graph, std::uint64_t spawnDepth, hpx::naming::id_type incumbent) -> void {
     BitSet<n_words_> p;
     p.resize(graph.size());
     p.set_all();
 
     std::vector<hpx::future<int>> futures;
     std::vector<unsigned> c;
-    spawnTasks(graph, spawnDepth, c, p, workqueue, incumbent, futures);
+    spawnTasks(graph, spawnDepth, c, p, incumbent, futures);
     hpx::wait_all(futures);
   }
 }
-
-namespace scheduler {
-  std::atomic<bool> running(true);
-  auto cancelScheduler() -> void;
-  auto scheduler(hpx::naming::id_type workqueue) -> void;
-}
-HPX_PLAIN_ACTION(scheduler::cancelScheduler, cancelSchedulerAction)
-HPX_PLAIN_ACTION(scheduler::scheduler, schedulerAction)
 
 namespace scheduler {
   auto cancelScheduler() -> void {
@@ -240,24 +242,45 @@ namespace scheduler {
     }
   }
 
-  auto scheduler(hpx::naming::id_type workqueue) -> void {
+  auto scheduler(std::vector<hpx::naming::id_type> workqueues) -> void {
+    auto here = hpx::find_here();
+    auto distributed = hpx::find_all_localities().size() > 1;
+
+    // Figure out which workqueue is local to this scheduler
+    for (auto it = workqueues.begin(); it != workqueues.end(); ++it) {
+      if (hpx::get_colocation_id(*it).get() == here) {
+        local_workqueue = *it;
+        workqueues.erase(it);
+        break;
+      }
+    }
+
     auto threads = hpx::get_os_thread_count() == 1 ? 1 : hpx::get_os_thread_count() - 1;
     hpx::threads::executors::current_executor scheduler;
+
+    // Pre-init the sem
+    tasks_required_sem.signal(threads);
 
     // Debugging
     std::cout << "Running with: " << threads << " scheduler threads" << std::endl;
 
     while (running) {
-      auto pending = scheduler.num_pending_closures();
-      if (pending < threads) {
-        auto task = hpx::async<workstealing::workqueue::steal_action>(workqueue).get();
-        if (task) {
-          scheduler.add(task);
-        } else {
-          hpx::this_thread::suspend();
-         }
+      tasks_required_sem.wait();
+
+      // Try local queue first then distributed
+      hpx::util::function<void(hpx::naming::id_type)> task;
+      task = hpx::async<workstealing::workqueue::steal_action>(local_workqueue).get();
+      if (distributed && !task) {
+        // Possibly a biased random function
+        auto victim = workqueues.begin();
+        std::advance(victim, std::rand() % workqueues.size());
+        task = hpx::async<workstealing::workqueue::steal_action>(*victim).get();
+      }
+      if (task) {
+        scheduler.add(hpx::util::bind(task, here));
       } else {
-        hpx::this_thread::suspend();
+        hpx::this_thread::suspend(200);
+        tasks_required_sem.signal();
       }
     }
   }
@@ -278,14 +301,21 @@ int hpx_main(boost::program_options::variables_map & opts) {
 
   // Run Maxclique
   auto incumbent = hpx::new_<globalBound::incumbent>(hpx::find_here()).get();
-  auto workqueue = hpx::new_<workstealing::workqueue>(hpx::find_here()).get();
 
-  // Start a scheduler on each node
-  hpx::lcos::broadcast_apply<schedulerAction>(hpx::find_all_localities(), workqueue);
+  // Launch one workqueue per node
+  auto localities = hpx::find_all_localities();
+  std::vector<hpx::naming::id_type> workqueues;
+  for (auto const& loc : localities) {
+    workqueues.push_back(hpx::new_<workstealing::workqueue>(loc).get());
+  }
+
+  // Launch a scheduler per node
+  hpx::lcos::broadcast_apply<schedulerAction>(hpx::find_all_localities(), workqueues);
+  hpx::this_thread::suspend(200); // Fix for now - give time for local_workqueue to be set
 
   auto spawnDepth = opts["spawn-depth"].as<std::uint64_t>();
   auto start_time = std::chrono::steady_clock::now();
-  graph::runMaxClique(graph, spawnDepth, incumbent, workqueue);
+  graph::runMaxClique(graph, spawnDepth, incumbent);
   auto overall_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_time);
 
