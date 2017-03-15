@@ -318,7 +318,7 @@ int main (int argc, char* argv[]) {
 
   desc_commandline.add_options()
     ( "spawn-depth,d",
-      boost::program_options::value<std::uint64_t>()->default_value(1),
+      boost::program_options::value<std::uint64_t>()->default_value(0),
       "Depth in the tree to spawn at"
     )
     ( "input-file,f",
