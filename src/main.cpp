@@ -30,14 +30,20 @@
 // Forward action decls
 namespace graph {
   template<unsigned n_words_>
-  auto maxcliqueTask(const BitGraph<n_words_> graph, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) -> void;
+  auto maxcliqueFindTask(std::uint64_t spawnDepth,
+                         const BitGraph<n_words_> graph,
+                         const hpx::naming::id_type incumbent,
+                         const hpx::naming::id_type found,
+                         std::vector<unsigned> c,
+                         BitSet<n_words_> p,
+                         const hpx::naming::id_type promise) -> void;
 
   std::atomic<int> globalBound(0);
   auto updateBound(int newBound) -> void;
   auto broadcastBound(int newBound) -> void;
 
 }
-HPX_PLAIN_ACTION(graph::maxcliqueTask<NWORDS>, maxcliqueTask400Action)
+HPX_PLAIN_ACTION(graph::maxcliqueFindTask<NWORDS>, maxcliqueFindTask400Action)
 HPX_PLAIN_ACTION(graph::updateBound, updateBoundAction)
 
 namespace scheduler {
@@ -124,6 +130,7 @@ namespace graph {
   template <unsigned n_words_>
   auto expand(const BitGraph<n_words_> & graph,
               const hpx::naming::id_type & incumbent,
+              const hpx::naming::id_type found,
               std::vector<unsigned> & c,
               BitSet<n_words_> & p) -> void {
     // initial colouring
@@ -146,16 +153,16 @@ namespace graph {
       BitSet<n_words_> new_p = p;
       graph.intersect_with_row(v, new_p);
 
-      if (c.size() > bnd) {
+      if (c.size() == bnd) {
           std::set<int> members;
           for (auto & v : c) {
             members.insert(v);
           }
-          hpx::lcos::broadcast_apply<updateBoundAction>(hpx::find_all_localities(), c.size());
-          hpx::async<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members).get();
+          hpx::async<globalBound::incumbent::updateBound_action>(incumbent, bnd, members).get();
+          hpx::async<hpx::lcos::base_lco_with_value<int>::set_value_action>(found, 1).get();
       }
 
-      expand(graph, incumbent, c, new_p);
+      expand(graph, incumbent, found, c, new_p);
 
       // now consider not taking v
       c.pop_back();
@@ -163,49 +170,72 @@ namespace graph {
     }
   }
 
-  template<unsigned n_words_>
-  auto spawnTasks(const BitGraph<n_words_> & graph,
-                  std::uint64_t spawnDepth,
-                  std::vector<unsigned> c,
-                  BitSet<n_words_> p,
-                  hpx::naming::id_type incumbent,
-                  std::vector<hpx::future<int>> & futures) -> void {
-    std::array<unsigned, n_words_ * bits_per_word> p_order;
-    std::array<unsigned, n_words_ * bits_per_word> p_bounds;
-    colour_class_order(graph, p, p_order, p_bounds);
+  template <unsigned n_words_>
+  auto expandSpawn(const BitGraph<n_words_> & graph,
+                   const hpx::naming::id_type & incumbent,
+                   const hpx::naming::id_type & found,
+                   std::uint64_t spawnDepth,
+                   std::vector<unsigned> & c,
+                   BitSet<n_words_> & p) -> void {
+    if (spawnDepth == 0) {
+      expand(graph, incumbent, found, c, p);
+    } else {
+      std::array<unsigned, n_words_ * bits_per_word> p_order;
+      std::array<unsigned, n_words_ * bits_per_word> p_bounds;
+      colour_class_order(graph, p, p_order, p_bounds);
 
-    for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
-      auto v = p_order[n];
-      c.push_back(v);
+      std::vector<hpx::future<int>> futures;
 
-      // filter p to contain vertices adjacent to v
-      BitSet<n_words_> new_p = p;
-      graph.intersect_with_row(v, new_p);
+      for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
+        auto bnd = globalBound.load();
+        if (c.size() + p_bounds[n] <= bnd)
+          return;
 
-      if (spawnDepth == 0) {
+        auto v = p_order[n];
+
+        // consider taking v
+        c.push_back(v);
+
+        // filter p to contain vertices adjacent to v
+        BitSet<n_words_> new_p = p;
+        graph.intersect_with_row(v, new_p);
+
+        if (c.size() == bnd) {
+          std::set<int> members;
+          for (auto & v : c) {
+            members.insert(v);
+          }
+          //hpx::lcos::broadcast_apply<updateBoundAction>(hpx::find_all_localities(), c.size());
+          hpx::async<globalBound::incumbent::updateBound_action>(incumbent, bnd, members).get();
+        }
+
         auto promise = std::shared_ptr<hpx::promise<int>>(new hpx::promise<int>());
         auto f = promise->get_future();
         auto promise_id = promise->get_id();
-
         futures.push_back(std::move(f));
 
-        hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueTask400Action(), _1, graph, incumbent, c, new_p, promise_id);
+        hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueFindTask400Action(), _1, spawnDepth - 1, graph, incumbent, found, c, new_p, promise_id);
         hpx::apply<workstealing::workqueue::addWork_action>(scheduler::local_workqueue, task);
-      } else {
-        spawnTasks(graph, spawnDepth - 1, c, new_p, incumbent, futures);
-      }
 
-      c.pop_back();
-      p.unset(v);
+        // now consider not taking v
+        c.pop_back();
+        p.unset(v);
+    }
+      hpx::wait_all(futures);
     }
   }
 
   template<unsigned n_words_>
-  void maxcliqueTask(const BitGraph<n_words_> graph, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) {
-    expand(graph, incumbent, c, p);
+  void maxcliqueFindTask(std::uint64_t spawnDepth,
+                         const BitGraph<n_words_> graph,
+                         const hpx::naming::id_type incumbent,
+                         const hpx::naming::id_type found,
+                         std::vector<unsigned> c,
+                         BitSet<n_words_> p,
+                         const hpx::naming::id_type promise) {
+    expandSpawn(graph, incumbent, found, spawnDepth, c, p);
     hpx::apply<hpx::lcos::base_lco_with_value<int>::set_value_action>(promise, 1);
     scheduler::tasks_required_sem.signal();
-    return;
   }
 
   auto updateBound(int newBound) -> void {
@@ -222,15 +252,31 @@ namespace graph {
   }
 
   template<unsigned n_words_>
-  auto runMaxClique(const BitGraph<n_words_> & graph, std::uint64_t spawnDepth, hpx::naming::id_type incumbent) -> void {
+  auto doSearch(const BitGraph<n_words_> & graph, std::uint64_t spawnDepth, hpx::naming::id_type incumbent, hpx::naming::id_type found) -> void {
+    std::vector<unsigned> c;
+    BitSet<n_words_> p;
+    expandSpawn(graph, incumbent, found, spawnDepth, c, p);
+
+    // Fully searched the space
+    hpx::apply<hpx::lcos::base_lco_with_value<int>::set_value_action>(found, 1);
+  }
+
+  template<unsigned n_words_>
+  auto runFindClique(const BitGraph<n_words_> & graph, std::uint64_t spawnDepth, hpx::naming::id_type incumbent, std::uint64_t searchsize) -> void {
     BitSet<n_words_> p;
     p.resize(graph.size());
     p.set_all();
 
-    std::vector<hpx::future<int>> futures;
-    std::vector<unsigned> c;
-    spawnTasks(graph, spawnDepth, c, p, incumbent, futures);
-    hpx::wait_all(futures);
+    auto done = hpx::lcos::broadcast<updateBoundAction>(hpx::find_all_localities(), searchsize);
+    hpx::wait_all(done);
+
+    hpx::promise<int> found;
+    auto foundF = found.get_future();
+    auto foundId = found.get_id();
+
+    hpx::apply(hpx::util::bind(&doSearch<n_words_>, graph, spawnDepth, incumbent, foundId));
+
+    foundF.get();
   }
 }
 
@@ -314,8 +360,9 @@ int hpx_main(boost::program_options::variables_map & opts) {
   hpx::this_thread::suspend(200); // Fix for now - give time for local_workqueue to be set
 
   auto spawnDepth = opts["spawn-depth"].as<std::uint64_t>();
+  auto expectedSize = opts["size-required"].as<std::uint64_t>();
   auto start_time = std::chrono::steady_clock::now();
-  graph::runMaxClique(graph, spawnDepth, incumbent);
+  graph::runFindClique(graph, spawnDepth, incumbent, expectedSize);
   auto overall_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_time);
 
@@ -350,6 +397,10 @@ int main (int argc, char* argv[]) {
     ( "spawn-depth,d",
       boost::program_options::value<std::uint64_t>()->default_value(0),
       "Depth in the tree to spawn at"
+    )
+    ( "size-required,s",
+      boost::program_options::value<std::uint64_t>()->default_value(0),
+      "Size of clear we are searching for"
     )
     ( "input-file,f",
       boost::program_options::value<std::string>(),
