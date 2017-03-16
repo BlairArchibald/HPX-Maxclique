@@ -29,6 +29,7 @@
 
 // Forward action decls
 namespace graph {
+  hpx::promise<int>* foundPromise;
   template<unsigned n_words_>
   auto maxcliqueFindTask(std::uint64_t spawnDepth,
                          const BitGraph<n_words_> graph,
@@ -129,7 +130,7 @@ namespace graph {
 
   template <unsigned n_words_>
   auto expand(const BitGraph<n_words_> & graph,
-              const hpx::naming::id_type & incumbent,
+              const hpx::naming::id_type incumbent,
               const hpx::naming::id_type found,
               std::vector<unsigned> & c,
               BitSet<n_words_> & p) -> void {
@@ -141,7 +142,7 @@ namespace graph {
     // for each v in p... (v comes later)
     for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
       auto bnd = globalBound.load();
-      if (c.size() + p_bounds[n] <= bnd)
+      if (c.size() + p_bounds[n] < bnd)
         return;
 
       auto v = p_order[n];
@@ -159,6 +160,10 @@ namespace graph {
             members.insert(v);
           }
           hpx::async<globalBound::incumbent::updateBound_action>(incumbent, bnd, members).get();
+          // Looks like it might be calling this twice before we finish the
+          // search? In Haskell setting a promise twice does nothing but here it
+          // probably fails? We should really exit the search quicker if we die
+          // anyway. There's an example program with cancellable actions
           hpx::async<hpx::lcos::base_lco_with_value<int>::set_value_action>(found, 1).get();
       }
 
@@ -172,8 +177,8 @@ namespace graph {
 
   template <unsigned n_words_>
   auto expandSpawn(const BitGraph<n_words_> & graph,
-                   const hpx::naming::id_type & incumbent,
-                   const hpx::naming::id_type & found,
+                   const hpx::naming::id_type incumbent,
+                   const hpx::naming::id_type found,
                    std::uint64_t spawnDepth,
                    std::vector<unsigned> & c,
                    BitSet<n_words_> & p) -> void {
@@ -188,7 +193,7 @@ namespace graph {
 
       for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
         auto bnd = globalBound.load();
-        if (c.size() + p_bounds[n] <= bnd)
+        if (c.size() + p_bounds[n] < bnd)
           return;
 
         auto v = p_order[n];
@@ -207,6 +212,7 @@ namespace graph {
           }
           //hpx::lcos::broadcast_apply<updateBoundAction>(hpx::find_all_localities(), c.size());
           hpx::async<globalBound::incumbent::updateBound_action>(incumbent, bnd, members).get();
+          hpx::async<hpx::lcos::base_lco_with_value<int>::set_value_action>(found, 1).get();
         }
 
         auto promise = std::shared_ptr<hpx::promise<int>>(new hpx::promise<int>());
@@ -254,7 +260,10 @@ namespace graph {
   template<unsigned n_words_>
   auto doSearch(const BitGraph<n_words_> & graph, std::uint64_t spawnDepth, hpx::naming::id_type incumbent, hpx::naming::id_type found) -> void {
     std::vector<unsigned> c;
-    BitSet<n_words_> p;
+    BitSet<n_words_> p; // Need to initialise this
+    p.resize(graph.size());
+    p.set_all();
+
     expandSpawn(graph, incumbent, found, spawnDepth, c, p);
 
     // Fully searched the space
@@ -270,9 +279,9 @@ namespace graph {
     auto done = hpx::lcos::broadcast<updateBoundAction>(hpx::find_all_localities(), searchsize);
     hpx::wait_all(done);
 
-    hpx::promise<int> found;
-    auto foundF = found.get_future();
-    auto foundId = found.get_id();
+    foundPromise = new hpx::promise<int>();
+    auto foundF  = foundPromise->get_future();
+    auto foundId = foundPromise->get_id();
 
     hpx::apply(hpx::util::bind(&doSearch<n_words_>, graph, spawnDepth, incumbent, foundId));
 
@@ -386,7 +395,10 @@ int hpx_main(boost::program_options::variables_map & opts) {
 
   hpx::lcos::broadcast_apply<cancelSchedulerAction>(hpx::find_all_localities());
 
-  return hpx::finalize();
+  //return hpx::finalize();
+  //We are done, just kill everything (not a particularly nice way to end).
+  //hpx::terminate();
+  return 0;
 }
 
 int main (int argc, char* argv[]) {
