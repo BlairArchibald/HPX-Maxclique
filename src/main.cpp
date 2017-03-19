@@ -195,7 +195,7 @@ namespace graph {
       auto bnd = globalBound.load();
       for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
         if (c.size() + p_bounds[n] < bnd)
-          return;
+          continue; // Don't spawn tasks that can't find the bound
 
         auto v = p_order[n];
 
