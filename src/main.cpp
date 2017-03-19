@@ -160,11 +160,12 @@ namespace graph {
             members.insert(v);
           }
           hpx::async<globalBound::incumbent::updateBound_action>(incumbent, bnd, members).get();
-          // Looks like it might be calling this twice before we finish the
-          // search? In Haskell setting a promise twice does nothing but here it
-          // probably fails? We should really exit the search quicker if we die
-          // anyway. There's an example program with cancellable actions
-          hpx::async<hpx::lcos::base_lco_with_value<int>::set_value_action>(found, 1).get();
+
+          try {
+            hpx::async<hpx::lcos::base_lco_with_value<int>::set_value_action>(found, 1).get();
+          } catch (hpx::exception const& e){
+            // Failed on double write, this is fine since we will terminate very soon anyway.
+          }
       }
 
       expand(graph, incumbent, found, c, new_p);
@@ -191,8 +192,8 @@ namespace graph {
 
       std::vector<hpx::future<int>> futures;
 
+      auto bnd = globalBound.load();
       for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
-        auto bnd = globalBound.load();
         if (c.size() + p_bounds[n] < bnd)
           return;
 
@@ -266,8 +267,11 @@ namespace graph {
 
     expandSpawn(graph, incumbent, found, spawnDepth, c, p);
 
-    // Fully searched the space
-    hpx::apply<hpx::lcos::base_lco_with_value<int>::set_value_action>(found, 1);
+    try {
+      hpx::async<hpx::lcos::base_lco_with_value<int>::set_value_action>(found, 1).get();
+    } catch (hpx::exception const& e){
+      // Failed on double write, this is fine since we will terminate very soon anyway.
+    }
   }
 
   template<unsigned n_words_>
@@ -393,11 +397,12 @@ int hpx_main(boost::program_options::variables_map & opts) {
 
   hpx::cout << "cpu = " << overall_time.count() << std::endl;
 
-  hpx::lcos::broadcast_apply<cancelSchedulerAction>(hpx::find_all_localities());
+  //hpx::lcos::broadcast_apply<cancelSchedulerAction>(hpx::find_all_localities());
+  hpx::lcos::broadcast<cancelSchedulerAction>(hpx::find_all_localities()).get();
 
   //return hpx::finalize();
   //We are done, just kill everything (not a particularly nice way to end).
-  //hpx::terminate();
+  hpx::terminate();
   return 0;
 }
 
