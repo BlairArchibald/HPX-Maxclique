@@ -30,7 +30,7 @@
 // Forward action decls
 namespace graph {
   template<unsigned n_words_>
-  auto maxcliqueTask(const BitGraph<n_words_> graph, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) -> void;
+  auto maxcliqueTask(const BitGraph<n_words_> graph, std::uint64_t spawndepth, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) -> void;
 
   std::atomic<int> globalBound(0);
   auto updateBound(int newBound) -> void;
@@ -205,8 +205,8 @@ namespace graph {
         auto promise_id = promise->get_id();
         futures.push_back(std::move(f));
 
-        //hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueTask400Action(), _1, graph, spawnDepth - 1, incumbent, c, new_p, promise_id);
-        //hpx::apply<workstealing::workqueue::addWork_action>(scheduler::local_workqueue, task);
+        hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueTask400Action(), _1, graph, spawnDepth - 1, incumbent, c, new_p, promise_id);
+        hpx::apply<workstealing::workqueue::addWork_action>(scheduler::local_workqueue, task);
 
         // now consider not taking v
         c.pop_back();
