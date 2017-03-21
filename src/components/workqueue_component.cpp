@@ -2,7 +2,7 @@
 
 namespace workstealing
 {
-  using funcType = hpx::util::function<void()>;
+  using funcType = hpx::util::function<void(hpx::naming::id_type)>;
   funcType workqueue::steal() {
       if (tasks.size() >= 1) {
         auto task = tasks.front();

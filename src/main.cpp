@@ -40,8 +40,16 @@ namespace graph {
 HPX_PLAIN_ACTION(graph::maxcliqueTask<NWORDS>, maxcliqueTask400Action)
 HPX_PLAIN_ACTION(graph::updateBound, updateBoundAction)
 
-// For distributed promises
-HPX_REGISTER_ACTION(hpx::lcos::base_lco_with_value<int>::set_value_action, set_value_action_int);
+namespace scheduler {
+  std::atomic<bool> running(true);
+  hpx::lcos::local::counting_semaphore tasks_required_sem;
+  hpx::naming::id_type local_workqueue;
+
+  auto cancelScheduler() -> void;
+  auto scheduler(std::vector<hpx::naming::id_type> workqueues) -> void;
+}
+HPX_PLAIN_ACTION(scheduler::cancelScheduler, cancelSchedulerAction)
+HPX_PLAIN_ACTION(scheduler::scheduler, schedulerAction)
 
 namespace graph {
   // Order a graphFromFile and return an ordered graph alongside a map to invert
@@ -113,7 +121,7 @@ namespace graph {
 
   template <unsigned n_words_>
   auto expand(const BitGraph<n_words_> & graph,
-              const hpx::naming::id_type & incumbent,
+              const hpx::naming::id_type incumbent,
               std::vector<unsigned> & c,
               BitSet<n_words_> & p) -> void {
     // initial colouring
@@ -153,48 +161,104 @@ namespace graph {
     }
   }
 
-  template<unsigned n_words_>
-  auto spawnTasks(const BitGraph<n_words_> & graph,
-                  std::uint64_t spawnDepth,
-                  std::vector<unsigned> c,
-                  BitSet<n_words_> p,
-                  hpx::naming::id_type workqueue,
-                  hpx::naming::id_type incumbent,
-                  std::vector<hpx::future<int>> & futures) -> void {
-    std::array<unsigned, n_words_ * bits_per_word> p_order;
-    std::array<unsigned, n_words_ * bits_per_word> p_bounds;
-    colour_class_order(graph, p, p_order, p_bounds);
+  template <unsigned n_words_>
+  auto expandSpawn(const BitGraph<n_words_> & graph,
+                   const hpx::naming::id_type incumbent,
+                   std::uint64_t spawnDepth,
+                   std::vector<unsigned> & c,
+                   BitSet<n_words_> & p) -> void {
+    if (spawnDepth == 0) {
+      expand(graph, incumbent, c, p);
+    } else {
+      // initial colouring
+      std::array<unsigned, n_words_ * bits_per_word> p_order;
+      std::array<unsigned, n_words_ * bits_per_word> p_bounds;
+      colour_class_order(graph, p, p_order, p_bounds);
 
-    for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
-      auto v = p_order[n];
-      c.push_back(v);
+      // for each v in p... (v comes later)
+      std::vector<hpx::future<int>> futures;
+      for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
+        auto bnd = globalBound.load();
+        if (c.size() + p_bounds[n] <= bnd)
+          continue;
 
-      // filter p to contain vertices adjacent to v
-      BitSet<n_words_> new_p = p;
-      graph.intersect_with_row(v, new_p);
+        auto v = p_order[n];
 
-      if (spawnDepth == 0) {
+        // consider taking v
+        c.push_back(v);
+
+        // filter p to contain vertices adjacent to v
+        BitSet<n_words_> new_p = p;
+        graph.intersect_with_row(v, new_p);
+
+        if (c.size() > bnd) {
+          std::set<int> members;
+          for (auto & v : c) {
+            members.insert(v);
+          }
+          hpx::lcos::broadcast_apply<updateBoundAction>(hpx::find_all_localities(), c.size());
+          hpx::async<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members).get();
+        }
+
         auto promise = std::shared_ptr<hpx::promise<int>>(new hpx::promise<int>());
         auto f = promise->get_future();
         auto promise_id = promise->get_id();
-
         futures.push_back(std::move(f));
 
-        hpx::util::function<void()> task = hpx::util::bind(maxcliqueTask400Action(), hpx::find_here(), graph, incumbent, c, new_p, promise_id);
-        hpx::apply<workstealing::workqueue::addWork_action>(workqueue, task);
-      } else {
-        spawnTasks(graph, spawnDepth - 1, c, new_p, workqueue, incumbent, futures);
-      }
+        //hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueTask400Action(), _1, graph, spawnDepth - 1, incumbent, c, new_p, promise_id);
+        //hpx::apply<workstealing::workqueue::addWork_action>(scheduler::local_workqueue, task);
 
-      c.pop_back();
-      p.unset(v);
+        // now consider not taking v
+        c.pop_back();
+        p.unset(v);
+      }
+      hpx::wait_all(futures);
     }
   }
 
-  template<unsigned n_words_>
-  void maxcliqueTask(const BitGraph<n_words_> graph, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) {
-    expand(graph, incumbent, c, p);
+  // template<unsigned n_words_>
+  // auto spawnTasks(const BitGraph<n_words_> & graph,
+  //                 std::uint64_t spawnDepth,
+  //                 std::vector<unsigned> c,
+  //                 BitSet<n_words_> p,
+  //                 hpx::naming::id_type workqueue,
+  //                 hpx::naming::id_type incumbent,
+  //                 std::vector<hpx::future<int>> & futures) -> void {
+  //   std::array<unsigned, n_words_ * bits_per_word> p_order;
+  //   std::array<unsigned, n_words_ * bits_per_word> p_bounds;
+  //   colour_class_order(graph, p, p_order, p_bounds);
+
+  //   for (int n = p.popcount() - 1 ; n >= 0 ; --n) {
+  //     auto v = p_order[n];
+  //     c.push_back(v);
+
+  //     // filter p to contain vertices adjacent to v
+  //     BitSet<n_words_> new_p = p;
+  //     graph.intersect_with_row(v, new_p);
+
+  //     if (spawnDepth == 0) {
+  //       auto promise = std::shared_ptr<hpx::promise<int>>(new hpx::promise<int>());
+  //       auto f = promise->get_future();
+  //       auto promise_id = promise->get_id();
+
+  //       futures.push_back(std::move(f));
+
+  //       hpx::util::function<void()> task = hpx::util::bind(maxcliqueTask400Action(), hpx::find_here(), graph, incumbent, c, new_p, promise_id);
+  //       hpx::apply<workstealing::workqueue::addWork_action>(workqueue, task);
+  //     } else {
+  //       spawnTasks(graph, spawnDepth - 1, c, new_p, workqueue, incumbent, futures);
+  //     }
+
+  //     c.pop_back();
+  //     p.unset(v);
+  //   }
+  // }
+
+    template<unsigned n_words_>
+    void maxcliqueTask(const BitGraph<n_words_> graph, std::uint64_t spawndepth, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) {
+    expandSpawn(graph, incumbent, spawndepth, c, p);
     hpx::apply<hpx::lcos::base_lco_with_value<int>::set_value_action>(promise, 1);
+    scheduler::tasks_required_sem.signal();
     return;
   }
 
@@ -212,25 +276,15 @@ namespace graph {
   }
 
   template<unsigned n_words_>
-  auto runMaxClique(const BitGraph<n_words_> & graph, std::uint64_t spawnDepth, hpx::naming::id_type incumbent, hpx::naming::id_type workqueue) -> void {
+  auto runMaxClique(const BitGraph<n_words_> & graph, std::uint64_t spawnDepth, const hpx::naming::id_type incumbent) -> void {
     BitSet<n_words_> p;
     p.resize(graph.size());
     p.set_all();
 
-    std::vector<hpx::future<int>> futures;
     std::vector<unsigned> c;
-    spawnTasks(graph, spawnDepth, c, p, workqueue, incumbent, futures);
-    hpx::wait_all(futures);
+    expandSpawn(graph, incumbent, spawnDepth, c, p);
   }
 }
-
-namespace scheduler {
-  std::atomic<bool> running(true);
-  auto cancelScheduler() -> void;
-  auto scheduler(hpx::naming::id_type workqueue) -> void;
-}
-HPX_PLAIN_ACTION(scheduler::cancelScheduler, cancelSchedulerAction)
-HPX_PLAIN_ACTION(scheduler::scheduler, schedulerAction)
 
 namespace scheduler {
   auto cancelScheduler() -> void {
@@ -239,25 +293,45 @@ namespace scheduler {
       ;
     }
   }
+  auto scheduler(std::vector<hpx::naming::id_type> workqueues) -> void {
+    auto here = hpx::find_here();
+    auto distributed = hpx::find_all_localities().size() > 1;
 
-  auto scheduler(hpx::naming::id_type workqueue) -> void {
+    // Figure out which workqueue is local to this scheduler
+    for (auto it = workqueues.begin(); it != workqueues.end(); ++it) {
+      if (hpx::get_colocation_id(*it).get() == here) {
+        local_workqueue = *it;
+        workqueues.erase(it);
+        break;
+      }
+    }
+
     auto threads = hpx::get_os_thread_count() == 1 ? 1 : hpx::get_os_thread_count() - 1;
     hpx::threads::executors::current_executor scheduler;
+
+    // Pre-init the sem
+    tasks_required_sem.signal(threads);
 
     // Debugging
     std::cout << "Running with: " << threads << " scheduler threads" << std::endl;
 
     while (running) {
-      auto pending = scheduler.num_pending_closures();
-      if (pending < threads) {
-        auto task = hpx::async<workstealing::workqueue::steal_action>(workqueue).get();
-        if (task) {
-          scheduler.add(task);
-        } else {
-          hpx::this_thread::suspend();
-         }
+      tasks_required_sem.wait();
+
+      // Try local queue first then distributed
+      hpx::util::function<void(hpx::naming::id_type)> task;
+      task = hpx::async<workstealing::workqueue::steal_action>(local_workqueue).get();
+      if (distributed && !task) {
+        // Possibly a biased random function
+        auto victim = workqueues.begin();
+        std::advance(victim, std::rand() % workqueues.size());
+        task = hpx::async<workstealing::workqueue::steal_action>(*victim).get();
+      }
+      if (task) {
+        scheduler.add(hpx::util::bind(task, here));
       } else {
-        hpx::this_thread::suspend();
+        hpx::this_thread::suspend(200);
+        tasks_required_sem.signal();
       }
     }
   }
@@ -276,16 +350,22 @@ int hpx_main(boost::program_options::variables_map & opts) {
   std::map<int, int> invMap;
   auto graph = graph::orderGraphFromFile<NWORDS>(gFile, invMap);
 
-  // Run Maxclique
   auto incumbent = hpx::new_<globalBound::incumbent>(hpx::find_here()).get();
-  auto workqueue = hpx::new_<workstealing::workqueue>(hpx::find_here()).get();
+
+  // Launch one workqueue per node
+  auto localities = hpx::find_all_localities();
+  std::vector<hpx::naming::id_type> workqueues;
+  for (auto const& loc : localities) {
+    workqueues.push_back(hpx::new_<workstealing::workqueue>(loc).get());
+  }
 
   // Start a scheduler on each node
-  hpx::lcos::broadcast_apply<schedulerAction>(hpx::find_all_localities(), workqueue);
+  hpx::lcos::broadcast_apply<schedulerAction>(hpx::find_all_localities(), workqueues);
+  hpx::this_thread::suspend(200); // Fix for now - give time for local_workqueue to be set
 
   auto spawnDepth = opts["spawn-depth"].as<std::uint64_t>();
   auto start_time = std::chrono::steady_clock::now();
-  graph::runMaxClique(graph, spawnDepth, incumbent, workqueue);
+  graph::runMaxClique(graph, spawnDepth, incumbent);
   auto overall_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_time);
 
@@ -307,7 +387,7 @@ int hpx_main(boost::program_options::variables_map & opts) {
 
   hpx::cout << "cpu = " << overall_time.count() << std::endl;
 
-  hpx::lcos::broadcast_apply<cancelSchedulerAction>(hpx::find_all_localities());
+  hpx::lcos::broadcast<cancelSchedulerAction>(hpx::find_all_localities()).get();
 
   return hpx::finalize();
 }
