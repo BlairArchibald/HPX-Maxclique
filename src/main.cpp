@@ -30,14 +30,18 @@
 // Forward action decls
 namespace graph {
   template<unsigned n_words_>
-  auto maxcliqueTask(const BitGraph<n_words_> graph, std::uint64_t spawndepth, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) -> void;
+  auto maxcliqueTask(std::uint64_t spawndepth, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) -> void;
 
   std::atomic<int> globalBound(0);
+  BitGraph<NWORDS> globalGraph;
   auto updateBound(int newBound) -> void;
   auto broadcastBound(int newBound) -> void;
 
+  template<unsigned n_words_>
+  auto setGlobalGraph(const BitGraph<n_words_> graph) -> void;
 }
 HPX_PLAIN_ACTION(graph::maxcliqueTask<NWORDS>, maxcliqueTask400Action)
+HPX_PLAIN_ACTION(graph::setGlobalGraph<NWORDS>, setGlobalGraphAction)
 HPX_PLAIN_ACTION(graph::updateBound, updateBoundAction)
 
 namespace scheduler {
@@ -205,7 +209,7 @@ namespace graph {
         auto promise_id = promise->get_id();
         futures.push_back(std::move(f));
 
-        hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueTask400Action(), _1, graph, spawnDepth - 1, incumbent, c, new_p, promise_id);
+        hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueTask400Action(), _1, spawnDepth - 1, incumbent, c, new_p, promise_id);
         hpx::apply<workstealing::workqueue::addWork_action>(scheduler::local_workqueue, task);
 
         // now consider not taking v
@@ -255,11 +259,12 @@ namespace graph {
   // }
 
     template<unsigned n_words_>
-    void maxcliqueTask(const BitGraph<n_words_> graph, std::uint64_t spawndepth, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) {
-    expandSpawn(graph, incumbent, spawndepth, c, p);
-    hpx::apply<hpx::lcos::base_lco_with_value<int>::set_value_action>(promise, 1);
-    scheduler::tasks_required_sem.signal();
-    return;
+    void maxcliqueTask(std::uint64_t spawndepth, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) {
+      // TODO CHECKME: Does this copy global graph or just send a ref?
+      expandSpawn(globalGraph, incumbent, spawndepth, c, p);
+      hpx::apply<hpx::lcos::base_lco_with_value<int>::set_value_action>(promise, 1);
+      scheduler::tasks_required_sem.signal();
+      return;
   }
 
   auto updateBound(int newBound) -> void {
@@ -273,6 +278,11 @@ namespace graph {
         break;
       }
     }
+  }
+
+  template<unsigned n_words_>
+  auto setGlobalGraph(const BitGraph<n_words_> graph) -> void {
+    globalGraph = graph;
   }
 
   template<unsigned n_words_>
@@ -349,6 +359,7 @@ int hpx_main(boost::program_options::variables_map & opts) {
   // Order the graph (keep a hold of the map)
   std::map<int, int> invMap;
   auto graph = graph::orderGraphFromFile<NWORDS>(gFile, invMap);
+  hpx::lcos::broadcast<setGlobalGraphAction>(hpx::find_all_localities(), graph).get();
 
   auto incumbent = hpx::new_<globalBound::incumbent>(hpx::find_here()).get();
 
