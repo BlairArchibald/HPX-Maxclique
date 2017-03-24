@@ -24,8 +24,9 @@
 
 // 64 bit words
 // 8 words covers 400 vertices
+// 13 words covers 800 vertices
 // Later we can specialise this at compile time
-#define NWORDS 8
+#define NWORDS 13
 
 // Forward action decls
 namespace graph {
