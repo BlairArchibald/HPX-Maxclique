@@ -228,6 +228,8 @@ namespace graph {
         c.pop_back();
         p.unset(v);
     }
+      // Get more work since this task will be sleeping for a while
+      scheduler::tasks_required_sem.signal();
       hpx::wait_all(futures);
     }
   }
