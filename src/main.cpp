@@ -217,6 +217,8 @@ namespace graph {
         c.pop_back();
         p.unset(v);
       }
+      // This task is going to sleep until all children are done, tell the scheduler to get more work
+      scheduler::tasks_required_sem.signal();
       hpx::wait_all(futures);
     }
   }
