@@ -41,7 +41,7 @@ namespace graph {
   template<unsigned n_words_>
   auto setGlobalGraph(const BitGraph<n_words_> graph) -> void;
 }
-HPX_PLAIN_ACTION(graph::maxcliqueTask<NWORDS>, maxcliqueTask400Action)
+HPX_PLAIN_ACTION(graph::maxcliqueTask<NWORDS>,  maxcliqueTaskAction)
 HPX_PLAIN_ACTION(graph::setGlobalGraph<NWORDS>, setGlobalGraphAction)
 HPX_PLAIN_ACTION(graph::updateBound, updateBoundAction)
 
@@ -125,7 +125,7 @@ namespace graph {
   }
 
   template <unsigned n_words_>
-  auto expand(const BitGraph<n_words_> & graph,
+  auto maximiseExpand(const BitGraph<n_words_> & graph,
               const hpx::naming::id_type incumbent,
               std::vector<unsigned> & c,
               BitSet<n_words_> & p) -> void {
@@ -158,7 +158,7 @@ namespace graph {
           hpx::async<globalBound::incumbent::updateBound_action>(incumbent, c.size(), members).get();
       }
 
-      expand(graph, incumbent, c, new_p);
+      maximiseExpand(graph, incumbent, c, new_p);
 
       // now consider not taking v
       c.pop_back();
@@ -167,13 +167,13 @@ namespace graph {
   }
 
   template <unsigned n_words_>
-  auto expandSpawn(const BitGraph<n_words_> & graph,
-                   const hpx::naming::id_type incumbent,
-                   std::uint64_t spawnDepth,
-                   std::vector<unsigned> & c,
-                   BitSet<n_words_> & p) -> void {
+  auto maximiseExpandSpawn(const BitGraph<n_words_> & graph,
+                           const hpx::naming::id_type incumbent,
+                           std::uint64_t spawnDepth,
+                           std::vector<unsigned> & c,
+                           BitSet<n_words_> & p) -> void {
     if (spawnDepth == 0) {
-      expand(graph, incumbent, c, p);
+      maximiseExpand(graph, incumbent, c, p);
     } else {
       // initial colouring
       std::array<unsigned, n_words_ * bits_per_word> p_order;
@@ -210,7 +210,7 @@ namespace graph {
         auto promise_id = promise->get_id();
         futures.push_back(std::move(f));
 
-        hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueTask400Action(), _1, spawnDepth - 1, incumbent, c, new_p, promise_id);
+        hpx::util::function<void(hpx::naming::id_type)> task = hpx::util::bind(maxcliqueTaskAction(), _1, spawnDepth - 1, incumbent, c, new_p, promise_id);
         hpx::apply<workstealing::workqueue::addWork_action>(scheduler::local_workqueue, task);
 
         // now consider not taking v
@@ -224,7 +224,7 @@ namespace graph {
   }
 
   // template<unsigned n_words_>
-  // auto spawnTasks(const BitGraph<n_words_> & graph,
+  // auto spawnTasksToDepth(const BitGraph<n_words_> & graph,
   //                 std::uint64_t spawnDepth,
   //                 std::vector<unsigned> c,
   //                 BitSet<n_words_> p,
@@ -250,7 +250,7 @@ namespace graph {
 
   //       futures.push_back(std::move(f));
 
-  //       hpx::util::function<void()> task = hpx::util::bind(maxcliqueTask400Action(), hpx::find_here(), graph, incumbent, c, new_p, promise_id);
+  //       hpx::util::function<void()> task = hpx::util::bind(maxcliqueTaskAction(), hpx::find_here(), graph, incumbent, c, new_p, promise_id);
   //       hpx::apply<workstealing::workqueue::addWork_action>(workqueue, task);
   //     } else {
   //       spawnTasks(graph, spawnDepth - 1, c, new_p, workqueue, incumbent, futures);
@@ -263,8 +263,7 @@ namespace graph {
 
     template<unsigned n_words_>
     void maxcliqueTask(std::uint64_t spawndepth, hpx::naming::id_type incumbent, std::vector<unsigned> c, BitSet<n_words_> p, hpx::naming::id_type promise) {
-      // TODO CHECKME: Does this copy global graph or just send a ref?
-      expandSpawn(globalGraph, incumbent, spawndepth, c, p);
+      maximiseExpandSpawn(globalGraph, incumbent, spawndepth, c, p);
       hpx::apply<hpx::lcos::base_lco_with_value<int>::set_value_action>(promise, 1);
       scheduler::tasks_required_sem.signal();
       return;
@@ -295,7 +294,7 @@ namespace graph {
     p.set_all();
 
     std::vector<unsigned> c;
-    expandSpawn(graph, incumbent, spawnDepth, c, p);
+    maximiseExpandSpawn(graph, incumbent, spawnDepth, c, p);
   }
 }
 
