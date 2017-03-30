@@ -97,31 +97,31 @@ if [[ $size != 0 ]]; then
     fail=$((fail+1))
 fi
 
-res=$(./maxclique --find-clique -s 22 -f brock200_1.clq --hpx:threads=all --hpx:queuing=local --hpx:ini=hpx.stacks.small_size=0x40000)
+res=$(./maxclique --find-clique -s 18 -f brock200_1.clq --hpx:threads=all --hpx:queuing=local --hpx:ini=hpx.stacks.small_size=0x40000)
 size=$(echo "${res}" | awk '/Size:/ {print $2}')
-if [[ $size != 0 ]]; then
-    echo "FAILED Find No Exist Maxclique brock200_1"
+if [[ $size != 18 ]]; then
+    echo "FAILED Find Exist Maxclique brock200_1"
     fail=$((fail+1))
 fi
 
-res=$(./maxclique --find-clique -s 13 -f brock200_2.clq --hpx:threads=all --hpx:queuing=local --hpx:ini=hpx.stacks.small_size=0x40000)
+res=$(./maxclique --find-clique -s 11 -f brock200_2.clq --hpx:threads=all --hpx:queuing=local --hpx:ini=hpx.stacks.small_size=0x40000)
 size=$(echo "${res}" | awk '/Size:/ {print $2}')
-if [[ $size != 0 ]]; then
-    echo "FAILED Find No Exist Maxclique brock200_2"
+if [[ $size != 11 ]]; then
+    echo "FAILED Find Exist Maxclique brock200_2"
     fail=$((fail+1))
 fi
 
-res=$(./maxclique --find-clique -s 26 -f brock200_3.clq --hpx:threads=all --hpx:queuing=local --hpx:ini=hpx.stacks.small_size=0x40000)
+res=$(./maxclique --find-clique -s 12 -f brock200_3.clq --hpx:threads=all --hpx:queuing=local --hpx:ini=hpx.stacks.small_size=0x40000)
 size=$(echo "${res}" | awk '/Size:/ {print $2}')
-if [[ $size != 0 ]]; then
-    echo "FAILED Find No Exist Maxclique brock200_3"
+if [[ $size != 12 ]]; then
+    echo "FAILED Find Exist Maxclique brock200_3"
     fail=$((fail+1))
 fi
 
-res=$(./maxclique --find-clique -s 18 -f brock200_4.clq --hpx:threads=all --hpx:queuing=local --hpx:ini=hpx.stacks.small_size=0x40000)
+res=$(./maxclique --find-clique -s 16 -f brock200_4.clq --hpx:threads=all --hpx:queuing=local --hpx:ini=hpx.stacks.small_size=0x40000)
 size=$(echo "${res}" | awk '/Size:/ {print $2}')
-if [[ $size != 0 ]]; then
-    echo "FAILED Find No Exist Maxclique brock200_4"
+if [[ $size != 16 ]]; then
+    echo "FAILED Find Exist Maxclique brock200_4"
     fail=$((fail+1))
 fi
 
