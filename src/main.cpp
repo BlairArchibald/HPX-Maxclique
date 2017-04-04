@@ -437,6 +437,7 @@ namespace scheduler {
 
   auto scheduler(std::vector<hpx::naming::id_type> workqueues) -> void {
     auto here = hpx::find_here();
+    hpx::naming::id_type last_remote = here; // We use *here* as a sentinel value
     auto distributed = hpx::find_all_localities().size() > 1;
 
     // Figure out which workqueue is local to this scheduler
@@ -464,15 +465,27 @@ namespace scheduler {
       hpx::util::function<void(hpx::naming::id_type)> task;
       task = hpx::async<workstealing::workqueue::steal_action>(local_workqueue).get();
       if (distributed && !task) {
-        // Possibly a biased random function
-        auto victim = workqueues.begin();
-        std::advance(victim, std::rand() % workqueues.size());
-        task = hpx::async<workstealing::workqueue::steal_action>(*victim).get();
+        if (last_remote != here) {
+          task = hpx::async<workstealing::workqueue::steal_action>(last_remote).get();
+        }
+
+        if (!task) {
+          // Possibly a biased random function
+          auto victim = workqueues.begin();
+          std::advance(victim, std::rand() % workqueues.size());
+          task = hpx::async<workstealing::workqueue::steal_action>(*victim).get();
+          if (task) {
+            last_remote = *victim;
+          } else {
+            last_remote = here;
+          }
+        }
       }
+
       if (task) {
         scheduler.add(hpx::util::bind(task, here));
       } else {
-        hpx::this_thread::suspend(200);
+        hpx::this_thread::suspend(10);
         tasks_required_sem.signal();
       }
     }
